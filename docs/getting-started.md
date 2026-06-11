@@ -121,3 +121,7 @@ groups reset internally
 ```cpp
 phase.stop();
 ```
+
+Calling `stop()` while Phase is idle, stopped, or failed is a success no-op. If `pause()` was called before `start()`, a pre-start `stop()` does not clear that pause; the later `start()` still waits for `resume()`.
+
+`end()` is final teardown. After `end()` succeeds, create a new `Phase` object instead of reusing the same instance.

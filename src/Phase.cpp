@@ -52,6 +52,43 @@ struct PhaseNode {
 	uint32_t pollIntervalMs = 0;
 };
 
+struct PhaseNodeRuntimeSnapshot {
+	size_t index = 0;
+	PhaseNodeType type = PhaseNodeType::None;
+	std::string name;
+	std::vector<std::string> dependencies;
+	bool optional = false;
+	bool initialized = false;
+	bool started = false;
+	bool ready = false;
+	bool failed = false;
+	bool skipped = false;
+	bool hasStartCallback = false;
+};
+
+struct PhaseStepCallbackSnapshot {
+	std::string name;
+	PhaseNodeType type = PhaseNodeType::Step;
+	bool optional = false;
+	PhaseCallback initCallback;
+	PhaseCallback deinitCallback;
+	PhaseCallback startCallback;
+	PhaseCallback stopCallback;
+	uint32_t initTimeoutMs = 0;
+	uint32_t startTimeoutMs = 0;
+	uint32_t stopTimeoutMs = 0;
+	uint32_t deinitTimeoutMs = 0;
+};
+
+struct PhaseGroupCallbackSnapshot {
+	std::string name;
+	PhaseNodeType type = PhaseNodeType::Group;
+	bool optional = false;
+	PhaseConditionCallback conditionCallback;
+	uint32_t timeoutMs = 0;
+	uint32_t pollMs = 0;
+};
+
 struct PhaseImpl {
 	PhaseConfig config{};
 	PhaseMutex mutex;
@@ -288,29 +325,93 @@ struct PhaseImpl {
 		return false;
 	}
 
-	std::string nodeName(size_t index) {
+	size_t nodeCount() {
 		PhaseLock lock(mutex);
-		if (!lock || index >= nodes.size()) {
-			return "";
+		if (!lock) {
+			return 0;
 		}
-		return nodes[index].name;
+		return nodes.size();
 	}
 
-	PhaseNodeType nodeType(size_t index) {
-		PhaseLock lock(mutex);
-		if (!lock || index >= nodes.size()) {
-			return PhaseNodeType::None;
-		}
-		return nodes[index].type;
-	}
-
-	bool isNodeActive(size_t index) {
+	bool getNodeRuntimeSnapshot(size_t index, PhaseNodeRuntimeSnapshot &out) {
 		PhaseLock lock(mutex);
 		if (!lock || index >= nodes.size()) {
 			return false;
 		}
 		const PhaseNode &node = nodes[index];
-		return !node.ready && !node.failed && !node.skipped;
+		out.index = index;
+		out.type = node.type;
+		out.name = node.name;
+		out.dependencies = node.dependencies;
+		out.optional = node.optional;
+		out.initialized = node.initialized;
+		out.started = node.started;
+		out.ready = node.ready;
+		out.failed = node.failed;
+		out.skipped = node.skipped;
+		out.hasStartCallback = static_cast<bool>(node.startCallback);
+		return true;
+	}
+
+	bool getNodeRuntimeSnapshot(const std::string &name, PhaseNodeRuntimeSnapshot &out) {
+		PhaseLock lock(mutex);
+		if (!lock) {
+			return false;
+		}
+		for (size_t i = 0; i < nodes.size(); ++i) {
+			const PhaseNode &node = nodes[i];
+			if (node.name != name) {
+				continue;
+			}
+			out.index = i;
+			out.type = node.type;
+			out.name = node.name;
+			out.dependencies = node.dependencies;
+			out.optional = node.optional;
+			out.initialized = node.initialized;
+			out.started = node.started;
+			out.ready = node.ready;
+			out.failed = node.failed;
+			out.skipped = node.skipped;
+			out.hasStartCallback = static_cast<bool>(node.startCallback);
+			return true;
+		}
+		return false;
+	}
+
+	bool getStepCallbackSnapshot(size_t index, PhaseStepCallbackSnapshot &out) {
+		PhaseLock lock(mutex);
+		if (!lock || index >= nodes.size() || nodes[index].type != PhaseNodeType::Step) {
+			return false;
+		}
+		const PhaseNode &node = nodes[index];
+		out.name = node.name;
+		out.type = node.type;
+		out.optional = node.optional;
+		out.initCallback = node.initCallback;
+		out.deinitCallback = node.deinitCallback;
+		out.startCallback = node.startCallback;
+		out.stopCallback = node.stopCallback;
+		out.initTimeoutMs = resolveTimeout(node, kInitTimeout);
+		out.startTimeoutMs = resolveTimeout(node, kStartTimeout);
+		out.stopTimeoutMs = resolveTimeout(node, kStopTimeout);
+		out.deinitTimeoutMs = resolveTimeout(node, kDeinitTimeout);
+		return true;
+	}
+
+	bool getGroupCallbackSnapshot(size_t index, PhaseGroupCallbackSnapshot &out) {
+		PhaseLock lock(mutex);
+		if (!lock || index >= nodes.size() || nodes[index].type != PhaseNodeType::Group) {
+			return false;
+		}
+		const PhaseNode &node = nodes[index];
+		out.name = node.name;
+		out.type = node.type;
+		out.optional = node.optional;
+		out.conditionCallback = node.conditionCallback;
+		out.timeoutMs = node.hasGroupTimeout ? node.groupTimeoutMs : config.defaultGroupTimeoutMs;
+		out.pollMs = node.hasPollInterval ? node.pollIntervalMs : config.conditionPollIntervalMs;
+		return true;
 	}
 
 	void resetRunState() {
@@ -329,42 +430,46 @@ struct PhaseImpl {
 		}
 	}
 
-	DependencyState initDependencyState(const PhaseNode &node) {
+	DependencyState initDependencyState(const PhaseNodeRuntimeSnapshot &node) {
 		for (const std::string &dependencyName : node.dependencies) {
-			PhaseNode *dependency = findNode(dependencyName);
-			if (dependency == nullptr) {
+			PhaseNodeRuntimeSnapshot dependency;
+			if (!getNodeRuntimeSnapshot(dependencyName, dependency)) {
 				return DependencyState::FailedRequired;
 			}
-			if (dependency->type == PhaseNodeType::Group) {
+			if (dependency.type == PhaseNodeType::Group) {
 				continue;
 			}
-			if (dependency->failed || dependency->skipped) {
+			if (dependency.failed || dependency.skipped) {
 				return node.optional ? DependencyState::SkipOptional : DependencyState::FailedRequired;
 			}
-			if (!dependency->initialized) {
+			if (!dependency.initialized) {
 				return DependencyState::Waiting;
 			}
 		}
 		return DependencyState::Ready;
 	}
 
-	DependencyState readinessDependencyState(const PhaseNode &node) {
+	DependencyState readinessDependencyState(const PhaseNodeRuntimeSnapshot &node) {
 		for (const std::string &dependencyName : node.dependencies) {
-			PhaseNode *dependency = findNode(dependencyName);
-			if (dependency == nullptr) {
+			PhaseNodeRuntimeSnapshot dependency;
+			if (!getNodeRuntimeSnapshot(dependencyName, dependency)) {
 				return DependencyState::FailedRequired;
 			}
-			if (dependency->failed || dependency->skipped) {
+			if (dependency.failed || dependency.skipped) {
 				return node.optional ? DependencyState::SkipOptional : DependencyState::FailedRequired;
 			}
-			if (!dependency->ready) {
+			if (!dependency.ready) {
 				return DependencyState::Waiting;
 			}
 		}
 		return DependencyState::Ready;
 	}
 
-	bool allStepsInitialized() const {
+	bool allStepsInitialized() {
+		PhaseLock lock(mutex);
+		if (!lock) {
+			return false;
+		}
 		for (const PhaseNode &node : nodes) {
 			if (node.type == PhaseNodeType::Step && !node.initialized && !node.failed && !node.skipped) {
 				return false;
@@ -373,7 +478,11 @@ struct PhaseImpl {
 		return true;
 	}
 
-	bool allNodesDone() const {
+	bool allNodesDone() {
+		PhaseLock lock(mutex);
+		if (!lock) {
+			return false;
+		}
 		for (const PhaseNode &node : nodes) {
 			if (!node.ready && !node.failed && !node.skipped) {
 				return false;
@@ -423,28 +532,16 @@ struct PhaseImpl {
 	}
 
 	PhaseResult runLifecycleCallback(
-	    size_t index,
+	    const std::string &name,
+	    PhaseNodeType type,
+	    uint32_t timeoutMs,
 	    PhaseCallback callback,
-	    uint8_t timeoutKind,
 	    PhaseState state,
 	    const char *successMessage,
 	    bool ignoreStop = false
 	) {
 		if (!callback) {
 			return PhaseResult::success();
-		}
-		std::string name;
-		PhaseNodeType type = PhaseNodeType::None;
-		uint32_t timeoutMs = 0;
-		{
-			PhaseLock lock(mutex);
-			if (!lock || index >= nodes.size()) {
-				return PhaseResult::failure(PhaseStatus::InvalidArgument, "invalid node");
-			}
-			PhaseNode &node = nodes[index];
-			name = node.name;
-			type = node.type;
-			timeoutMs = resolveTimeout(node, timeoutKind);
 		}
 		if (!waitIfPaused(ignoreStop)) {
 			return PhaseResult::failure(PhaseStatus::Busy, "phase stopped");
@@ -461,43 +558,30 @@ struct PhaseImpl {
 	}
 
 	PhaseResult waitForGroup(size_t index) {
-		std::string name;
-		PhaseNodeType type = PhaseNodeType::None;
-		PhaseConditionCallback conditionCallback;
-		uint32_t timeoutMs = 0;
-		uint32_t pollMs = 0;
-		{
-			PhaseLock lock(mutex);
-			if (!lock || index >= nodes.size()) {
-				return PhaseResult::failure(PhaseStatus::InvalidArgument, "invalid group");
-			}
-			const PhaseNode &node = nodes[index];
-			name = node.name;
-			type = node.type;
-			conditionCallback = node.conditionCallback;
-			timeoutMs = node.hasGroupTimeout ? node.groupTimeoutMs : config.defaultGroupTimeoutMs;
-			pollMs = node.hasPollInterval ? node.pollIntervalMs : config.conditionPollIntervalMs;
+		PhaseGroupCallbackSnapshot group;
+		if (!getGroupCallbackSnapshot(index, group)) {
+			return PhaseResult::failure(PhaseStatus::InvalidArgument, "invalid group");
 		}
 		if (!waitIfPaused()) {
 			return PhaseResult::failure(PhaseStatus::Busy, "phase stopped");
 		}
 		uint32_t elapsedMs = 0;
-		emitChange(PhaseState::Starting, type, name.c_str(), "waiting for group");
+		emitChange(PhaseState::Starting, group.type, group.name.c_str(), "waiting for group");
 		while (!shouldStop() && !isEnding()) {
 			if (!waitIfPaused()) {
 				return PhaseResult::failure(PhaseStatus::Busy, "phase stopped");
 			}
-			if (!conditionCallback || conditionCallback()) {
-				emitChange(PhaseState::Starting, type, name.c_str(), "group ready");
+			if (!group.conditionCallback || group.conditionCallback()) {
+				emitChange(PhaseState::Starting, group.type, group.name.c_str(), "group ready");
 				return PhaseResult::success("group ready");
 			}
-			if (timeoutMs > 0 && elapsedMs >= timeoutMs) {
+			if (group.timeoutMs > 0 && elapsedMs >= group.timeoutMs) {
 				const PhaseResult result =
 				    PhaseResult::failure(PhaseStatus::Timeout, "group condition timed out");
-				emitChange(PhaseState::Starting, type, name.c_str(), result.message, result);
+				emitChange(PhaseState::Starting, group.type, group.name.c_str(), result.message, result);
 				return result;
 			}
-			const uint32_t delayMs = pollMs == 0 ? 1 : pollMs;
+			const uint32_t delayMs = group.pollMs == 0 ? 1 : group.pollMs;
 			ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(delayMs));
 			if (!isPausedFlag()) {
 				elapsedMs += delayMs;
@@ -530,8 +614,12 @@ struct PhaseImpl {
 
 	PhaseResult runOneInitAction(bool &madeProgress) {
 		madeProgress = false;
-		for (size_t i = 0; i < nodes.size(); ++i) {
-			PhaseNode &node = nodes[i];
+		const size_t count = nodeCount();
+		for (size_t i = 0; i < count; ++i) {
+			PhaseNodeRuntimeSnapshot node;
+			if (!getNodeRuntimeSnapshot(i, node)) {
+				continue;
+			}
 			if (node.type != PhaseNodeType::Step || node.initialized || node.failed || node.skipped) {
 				continue;
 			}
@@ -540,8 +628,6 @@ struct PhaseImpl {
 				continue;
 			}
 			if (deps == DependencyState::SkipOptional) {
-				const std::string name = nodeName(i);
-				const PhaseNodeType type = nodeType(i);
 				{
 					PhaseLock lock(mutex);
 					if (lock) {
@@ -551,8 +637,8 @@ struct PhaseImpl {
 				madeProgress = true;
 				emitChange(
 				    PhaseState::Booting,
-				    type,
-				    name.c_str(),
+				    node.type,
+				    node.name.c_str(),
 				    "optional node skipped"
 				);
 				return PhaseResult::success();
@@ -571,18 +657,21 @@ struct PhaseImpl {
 				);
 			}
 
-			const bool optional = node.optional;
-			PhaseCallback initCallback = node.initCallback;
+			PhaseStepCallbackSnapshot step;
+			if (!getStepCallbackSnapshot(i, step)) {
+				continue;
+			}
 			PhaseResult result = runLifecycleCallback(
-			    i,
-			    initCallback,
-			    kInitTimeout,
+			    step.name,
+			    step.type,
+			    step.initTimeoutMs,
+			    step.initCallback,
 			    PhaseState::Booting,
 			    "initializing step"
 			);
 			madeProgress = true;
 			if (!result) {
-				if (optional) {
+				if (step.optional) {
 					return markOptionalFailure(i, result);
 				}
 				PhaseLock lock(mutex);
@@ -605,9 +694,13 @@ struct PhaseImpl {
 
 	PhaseResult runOneReadinessAction(bool &madeProgress) {
 		madeProgress = false;
-		for (size_t i = 0; i < nodes.size(); ++i) {
-			PhaseNode &node = nodes[i];
-			if (!isNodeActive(i)) {
+		const size_t count = nodeCount();
+		for (size_t i = 0; i < count; ++i) {
+			PhaseNodeRuntimeSnapshot node;
+			if (!getNodeRuntimeSnapshot(i, node)) {
+				continue;
+			}
+			if (node.ready || node.failed || node.skipped) {
 				continue;
 			}
 			const DependencyState deps = readinessDependencyState(node);
@@ -615,8 +708,6 @@ struct PhaseImpl {
 				continue;
 			}
 			if (deps == DependencyState::SkipOptional) {
-				const std::string name = nodeName(i);
-				const PhaseNodeType type = nodeType(i);
 				{
 					PhaseLock lock(mutex);
 					if (lock) {
@@ -626,8 +717,8 @@ struct PhaseImpl {
 				madeProgress = true;
 				emitChange(
 				    PhaseState::Starting,
-				    type,
-				    name.c_str(),
+				    node.type,
+				    node.name.c_str(),
 				    "optional node skipped"
 				);
 				return PhaseResult::success();
@@ -645,7 +736,6 @@ struct PhaseImpl {
 			}
 
 			if (node.type == PhaseNodeType::Group) {
-				const bool optional = node.optional;
 				PhaseResult result = waitForGroup(i);
 				madeProgress = true;
 				if (result) {
@@ -655,7 +745,7 @@ struct PhaseImpl {
 					}
 					return result;
 				}
-				if (optional) {
+				if (node.optional) {
 					return markOptionalFailure(i, result, PhaseState::Starting);
 				}
 				PhaseLock lock(mutex);
@@ -668,37 +758,37 @@ struct PhaseImpl {
 			if (!node.initialized) {
 				continue;
 			}
-			if (!node.startCallback) {
-				const std::string name = node.name;
-				const PhaseNodeType type = node.type;
+			if (!node.hasStartCallback) {
 				PhaseLock lock(mutex);
 				if (lock) {
-					nodes[i].started = true;
 					nodes[i].ready = true;
 				}
 				madeProgress = true;
-				emitChange(PhaseState::Starting, type, name.c_str(), "step ready");
+				emitChange(PhaseState::Starting, node.type, node.name.c_str(), "step ready");
 				return PhaseResult::success("step ready");
 			}
 
-			const bool optional = node.optional;
-			PhaseCallback startCallback = node.startCallback;
-			PhaseCallback deinitCallback = node.deinitCallback;
+			PhaseStepCallbackSnapshot step;
+			if (!getStepCallbackSnapshot(i, step)) {
+				continue;
+			}
 			PhaseResult result = runLifecycleCallback(
-			    i,
-			    startCallback,
-			    kStartTimeout,
+			    step.name,
+			    step.type,
+			    step.startTimeoutMs,
+			    step.startCallback,
 			    PhaseState::Starting,
 			    "starting step"
 			);
 			madeProgress = true;
 			if (!result) {
-				if (optional) {
-					if (deinitCallback) {
+				if (step.optional) {
+					if (step.deinitCallback) {
 						(void)runLifecycleCallback(
-						    i,
-						    deinitCallback,
-						    kDeinitTimeout,
+						    step.name,
+						    step.type,
+						    step.deinitTimeoutMs,
+						    step.deinitCallback,
 						    PhaseState::Deinitializing,
 						    "deinitializing optional step"
 						);
@@ -839,27 +929,20 @@ struct PhaseImpl {
 			order = startOrder;
 		}
 		for (auto it = order.rbegin(); it != order.rend(); ++it) {
-			if (*it >= nodes.size()) {
+			PhaseNodeRuntimeSnapshot node;
+			PhaseStepCallbackSnapshot step;
+			if (!getNodeRuntimeSnapshot(*it, node) || !getStepCallbackSnapshot(*it, step)) {
 				continue;
 			}
-			PhaseCallback stopCallback;
-			bool started = false;
-			{
-				PhaseLock lock(mutex);
-				if (!lock || *it >= nodes.size()) {
-					continue;
-				}
-				started = nodes[*it].started;
-				stopCallback = nodes[*it].stopCallback;
-			}
-			if (!started) {
+			if (!node.started) {
 				continue;
 			}
-			if (stopCallback) {
+			if (step.stopCallback) {
 				(void)runLifecycleCallback(
-				    *it,
-				    stopCallback,
-				    kStopTimeout,
+				    step.name,
+				    step.type,
+				    step.stopTimeoutMs,
+				    step.stopCallback,
 				    PhaseState::Stopping,
 				    "stopping step",
 				    true
@@ -889,27 +972,20 @@ struct PhaseImpl {
 			order = initOrder;
 		}
 		for (auto it = order.rbegin(); it != order.rend(); ++it) {
-			if (*it >= nodes.size()) {
+			PhaseNodeRuntimeSnapshot node;
+			PhaseStepCallbackSnapshot step;
+			if (!getNodeRuntimeSnapshot(*it, node) || !getStepCallbackSnapshot(*it, step)) {
 				continue;
 			}
-			PhaseCallback deinitCallback;
-			bool initializedNode = false;
-			{
-				PhaseLock lock(mutex);
-				if (!lock || *it >= nodes.size()) {
-					continue;
-				}
-				initializedNode = nodes[*it].initialized;
-				deinitCallback = nodes[*it].deinitCallback;
-			}
-			if (!initializedNode) {
+			if (!node.initialized) {
 				continue;
 			}
-			if (deinitCallback) {
+			if (step.deinitCallback) {
 				(void)runLifecycleCallback(
-				    *it,
-				    deinitCallback,
-				    kDeinitTimeout,
+				    step.name,
+				    step.type,
+				    step.deinitTimeoutMs,
+				    step.deinitCallback,
 				    PhaseState::Deinitializing,
 				    "deinitializing step",
 				    true
@@ -1129,6 +1205,9 @@ PhaseResult Phase::init(const PhaseConfig &config) {
 		if (!lock) {
 			return PhaseResult::failure(PhaseStatus::InternalError, "lock failed");
 		}
+		if (_impl->ending || _impl->currentState == PhaseState::Ended) {
+			return PhaseResult::failure(PhaseStatus::Busy, "phase has ended");
+		}
 		if (_impl->initialized) {
 			return PhaseResult::failure(PhaseStatus::AlreadyInitialized, "phase is already initialized");
 		}
@@ -1206,11 +1285,14 @@ PhaseResult Phase::start() {
 		if (!lock) {
 			return PhaseResult::failure(PhaseStatus::InternalError, "lock failed");
 		}
-		if (!_impl->initialized) {
-			return PhaseResult::failure(PhaseStatus::NotInitialized, "phase is not initialized");
-		}
 		if (_impl->ending) {
 			return PhaseResult::failure(PhaseStatus::Busy, "phase is ending");
+		}
+		if (_impl->currentState == PhaseState::Ended) {
+			return PhaseResult::failure(PhaseStatus::Busy, "phase has ended");
+		}
+		if (!_impl->initialized) {
+			return PhaseResult::failure(PhaseStatus::NotInitialized, "phase is not initialized");
 		}
 		if (_impl->currentState != PhaseState::Idle && _impl->currentState != PhaseState::Stopped) {
 			if (_impl->currentState == PhaseState::Ready) {
@@ -1234,8 +1316,23 @@ PhaseResult Phase::stop() {
 		if (!lock) {
 			return PhaseResult::failure(PhaseStatus::InternalError, "lock failed");
 		}
+		if (_impl->ending) {
+			return PhaseResult::failure(PhaseStatus::Busy, "phase is ending");
+		}
+		if (_impl->currentState == PhaseState::Ended) {
+			return PhaseResult::failure(PhaseStatus::Busy, "phase has ended");
+		}
 		if (!_impl->initialized) {
 			return PhaseResult::failure(PhaseStatus::NotInitialized, "phase is not initialized");
+		}
+		if (_impl->currentState == PhaseState::Idle ||
+		    _impl->currentState == PhaseState::Stopped ||
+		    _impl->currentState == PhaseState::Failed) {
+			return PhaseResult::success("phase stopped");
+		}
+		if (_impl->currentState == PhaseState::Stopping ||
+		    _impl->currentState == PhaseState::Deinitializing) {
+			return PhaseResult::success("phase stopping");
 		}
 		_impl->stopRequested = true;
 	}

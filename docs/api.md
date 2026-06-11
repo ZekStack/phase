@@ -21,7 +21,7 @@ Phase does not use exceptions. Operations return `PhaseResult`.
 | `init(config)` | Create the Phase task and prepare registration. |
 | `start()` | Request async boot. |
 | `stop()` | Request reverse stop/deinit. |
-| `end(timeoutMs)` | Stop the task and end Phase. |
+| `end(timeoutMs)` | Stop the task and permanently end this Phase instance. |
 | `pause(reason)` | Request cooperative pause. |
 | `resume()` | Continue lifecycle progression. |
 | `isPaused()` | Return current pause flag. |
@@ -97,3 +97,11 @@ Callbacks are invoked synchronously from the Phase task. Keep them short.
 ## Diagnostics
 
 `PhaseDiag` reports node counts, boot count, rollback count, change count, state, stack memory preference, and the task stack high-water mark after the task ends.
+
+`startedCount` counts only steps whose `start()` callback completed. Steps without a `start()` callback can become ready without being counted as started.
+
+## Stop and end behavior
+
+`stop()` is a no-op when Phase is idle, stopped, or failed. It requests shutdown when Phase is booting, starting, ready, or actively paused.
+
+`end()` is final teardown for a Phase instance. After `end()` succeeds, create a new `Phase` object instead of calling `init()` again on the same object.

@@ -41,6 +41,8 @@ Use bounded waits inside callbacks and return a failed `PhaseResult` when the mo
 
 Phase destruction waits for the internal task to exit. If a callback never returns, destroying the `Phase` object can block forever.
 
+`end()` is also terminal. After it succeeds, create a new `Phase` object instead of calling `init()` again.
+
 ## A group timeout expires while waiting for a condition
 
 Group condition polling is controlled by Phase. Increase the group timeout or make the condition represent a lower-level readiness gate.
@@ -56,3 +58,5 @@ phase.addGroup("internet")
 Phase only stops successfully started steps and only deinitializes successfully initialized steps.
 
 Groups do not stop or deinitialize because they do not own resources.
+
+Steps without a `start()` callback are ready once their dependencies are ready, but they are not counted as started and do not run through the stop phase.

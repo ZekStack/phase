@@ -49,6 +49,8 @@ Lifecycle callback timeouts are cooperative. Phase measures elapsed time after a
 
 Because callbacks cannot be interrupted, destroying a `Phase` object waits indefinitely for the Phase task to exit. If a lifecycle callback never returns, the destructor can block forever.
 
+Calling `end()` performs final teardown for the current `Phase` instance. A successfully ended instance cannot be initialized again.
+
 Group condition polling timeouts are controlled by Phase and pause cleanly while Phase is paused.
 
 ## Per-step timeouts
