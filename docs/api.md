@@ -94,6 +94,8 @@ Group conditions return `bool`.
 
 Callbacks are invoked synchronously from the Phase task. Keep them short.
 
+`nodeName`, `pauseReason`, and `message` pointers are only guaranteed to be valid during the callback invocation. Copy them if you need to store them.
+
 ## Diagnostics
 
 `PhaseDiag` reports node counts, boot count, rollback count, change count, state, stack memory preference, and the task stack high-water mark after the task ends.
@@ -102,6 +104,6 @@ Callbacks are invoked synchronously from the Phase task. Keep them short.
 
 ## Stop and end behavior
 
-`stop()` is a no-op when Phase is idle, stopped, or failed. It requests shutdown when Phase is booting, starting, ready, or actively paused.
+`stop()` is a no-op when Phase is idle, stopped, or failed. It requests shutdown when Phase is booting, starting, ready, or actively paused. If `start()` was queued but the Phase task has not started booting yet, `stop()` cancels that pending start.
 
 `end()` is final teardown for a Phase instance. After `end()` succeeds, create a new `Phase` object instead of calling `init()` again on the same object.

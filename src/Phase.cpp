@@ -1326,8 +1326,14 @@ PhaseResult Phase::stop() {
 			return PhaseResult::failure(PhaseStatus::NotInitialized, "phase is not initialized");
 		}
 		if (_impl->currentState == PhaseState::Idle ||
-		    _impl->currentState == PhaseState::Stopped ||
-		    _impl->currentState == PhaseState::Failed) {
+		    _impl->currentState == PhaseState::Stopped) {
+			if (_impl->startRequested) {
+				_impl->startRequested = false;
+				return PhaseResult::success("phase start cancelled");
+			}
+			return PhaseResult::success("phase stopped");
+		}
+		if (_impl->currentState == PhaseState::Failed) {
 			return PhaseResult::success("phase stopped");
 		}
 		if (_impl->currentState == PhaseState::Stopping ||
@@ -1385,6 +1391,12 @@ PhaseResult Phase::pause(const char *reason) {
 		if (!lock) {
 			return PhaseResult::failure(PhaseStatus::InternalError, "lock failed");
 		}
+		if (_impl->ending) {
+			return PhaseResult::failure(PhaseStatus::Busy, "phase is ending");
+		}
+		if (_impl->currentState == PhaseState::Ended) {
+			return PhaseResult::failure(PhaseStatus::Busy, "phase has ended");
+		}
 		if (!_impl->initialized) {
 			return PhaseResult::failure(PhaseStatus::NotInitialized, "phase is not initialized");
 		}
@@ -1402,6 +1414,12 @@ PhaseResult Phase::resume() {
 		PhaseLock lock(_impl->mutex);
 		if (!lock) {
 			return PhaseResult::failure(PhaseStatus::InternalError, "lock failed");
+		}
+		if (_impl->ending) {
+			return PhaseResult::failure(PhaseStatus::Busy, "phase is ending");
+		}
+		if (_impl->currentState == PhaseState::Ended) {
+			return PhaseResult::failure(PhaseStatus::Busy, "phase has ended");
 		}
 		if (!_impl->initialized) {
 			return PhaseResult::failure(PhaseStatus::NotInitialized, "phase is not initialized");
