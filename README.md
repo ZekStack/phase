@@ -94,6 +94,8 @@ void loop() {
 * Callback timeout checks happen after the callback returns.
 * Group condition polling timeouts are enforced by the Phase task.
 * Registration closes after `start()`.
+* The destructor waits for the Phase task to end. If user lifecycle code never returns, destruction can block forever.
+* Phase uses bounded node and dependency counts, but registration currently uses dynamic allocation through `std::vector`, `std::string`, and `std::function`. Register nodes during setup before runtime work starts.
 * Phase does not depend on other ZekStack libraries.
 
 ## Examples

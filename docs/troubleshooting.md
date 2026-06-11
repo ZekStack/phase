@@ -39,6 +39,8 @@ Lifecycle callbacks are cooperative. Phase can report that a returned callback e
 
 Use bounded waits inside callbacks and return a failed `PhaseResult` when the module cannot finish.
 
+Phase destruction waits for the internal task to exit. If a callback never returns, destroying the `Phase` object can block forever.
+
 ## A group timeout expires while waiting for a condition
 
 Group condition polling is controlled by Phase. Increase the group timeout or make the condition represent a lower-level readiness gate.

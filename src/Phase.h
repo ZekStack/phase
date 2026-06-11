@@ -82,7 +82,6 @@ struct PhaseConfig {
 	PhaseStackType stackType = PhaseStackType::Auto;
 	size_t maxNodes = 32;
 	size_t maxDependenciesPerNode = 8;
-	size_t commandQueueSize = 8;
 	uint32_t defaultInitTimeoutMs = 30000;
 	uint32_t defaultStartTimeoutMs = 30000;
 	uint32_t defaultStopTimeoutMs = 30000;
@@ -95,7 +94,6 @@ struct PhaseChange {
 	PhaseState state = PhaseState::Idle;
 	PhaseNodeType nodeType = PhaseNodeType::None;
 	const char *nodeName = nullptr;
-	const char *nextNodeName = nullptr;
 	const char *pauseReason = nullptr;
 	const char *message = "ok";
 	bool isBooting = false;

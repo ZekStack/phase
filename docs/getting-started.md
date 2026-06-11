@@ -76,7 +76,7 @@ phase.add("database", initDatabase, deinitDatabase)
     .depends({ "storage", "time" });
 ```
 
-The dependent node runs only after every dependency is ready.
+During the init wave, step nodes initialize after their step dependencies have initialized. Groups are not evaluated in the init wave. During the start/readiness wave, steps start and groups are evaluated only after their dependencies are ready.
 
 ## Groups
 
@@ -91,6 +91,8 @@ phase.addGroup("internet")
 ```
 
 Groups are useful for readiness states such as link-up, internet, configured, or cloud-authenticated.
+
+Groups are evaluated during the start/readiness wave, so a group such as `internet` can safely depend on a started `network` step instead of only an initialized one.
 
 ## Pause and resume
 

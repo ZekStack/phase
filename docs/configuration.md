@@ -31,7 +31,8 @@ PhaseResult result = phase.init(config);
 | --- | --- | --- |
 | `maxNodes` | `32` | Maximum total steps and groups. |
 | `maxDependenciesPerNode` | `8` | Maximum dependencies for one node. |
-| `commandQueueSize` | `8` | Reserved command capacity for lifecycle requests. |
+
+These limits bound how many nodes and dependencies Phase accepts. Registration still uses dynamic allocation internally through `std::vector`, `std::string`, and `std::function`, so register all nodes during setup and avoid runtime registration.
 
 ## Timeouts
 
@@ -45,6 +46,8 @@ PhaseResult result = phase.init(config);
 | `conditionPollIntervalMs` | `100` | Default group condition poll interval. |
 
 Lifecycle callback timeouts are cooperative. Phase measures elapsed time after a callback returns. A callback that never returns cannot be interrupted by Phase.
+
+Because callbacks cannot be interrupted, destroying a `Phase` object waits indefinitely for the Phase task to exit. If a lifecycle callback never returns, the destructor can block forever.
 
 Group condition polling timeouts are controlled by Phase and pause cleanly while Phase is paused.
 
