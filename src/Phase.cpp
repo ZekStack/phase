@@ -827,7 +827,6 @@ struct PhaseImpl {
 				return PhaseResult::failure(PhaseStatus::InternalError, "lock failed");
 			}
 			registrationClosed = true;
-			stopRequested = false;
 			bootCount++;
 		}
 		PhaseResult validation = validateGraph();
@@ -1040,12 +1039,15 @@ struct PhaseImpl {
 					localStop = stopRequested;
 					localStart = startRequested;
 					startRequested = false;
+					if (localStart && !localStop) {
+						currentState = PhaseState::Booting;
+					}
 				}
 			}
 			if (localStop) {
 				(void)runShutdown();
 			}
-			if (localStart) {
+			if (localStart && !localStop) {
 				(void)runBoot();
 			}
 		}
