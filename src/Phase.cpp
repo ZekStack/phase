@@ -2,5 +2,7 @@
 // internal fragments to keep the lifecycle state machine reviewable.
 #include "internal/PhaseRuntimeBase.inc"
 #include "internal/PhaseRuntimeLifecycle.inc"
-#include "internal/PhasePublic.inc"
+#include "internal/PhaseBuilders.inc"
+#include "internal/PhaseInit.inc"
+#include "internal/PhaseControl.inc"
 #include "internal/PhaseRegistration.inc"
