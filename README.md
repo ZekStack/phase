@@ -93,9 +93,12 @@ void loop() {
 * `pause()` is async and takes effect before the next lifecycle action or group-condition poll.
 * Callback timeout checks happen after the callback returns.
 * Group condition polling timeouts are enforced by the Phase task.
-* Registration closes after `start()`.
-* The destructor waits for the Phase task to end. If user lifecycle code never returns, destruction can block forever.
-* Phase uses bounded node and dependency counts, but registration currently uses dynamic allocation through `std::vector`, `std::string`, and `std::function`. Register nodes during setup before runtime work starts.
+* Registration closes after a successful `start()` request.
+* `stop()`, `pause()`, and `resume()` may be called from Phase callbacks. `end()` must be called from another task and returns `Busy` when called from the Phase task.
+* The destructor waits for the Phase task to stop using its internal state. Destruction from a Phase callback is deferred safely until the worker exits.
+* Registration and graph preparation use `std::vector`, `std::string`, and `std::function`. Node storage, dependency indexes, and lifecycle order are preallocated before the worker starts; lifecycle execution does not allocate.
+* `PhaseChange` string pointers are valid for the complete callback invocation. Event messages and pause reasons are copied into bounded internal snapshots and may be truncated to 191 characters.
+* Stop/deinit failures are best-effort and are reported through `onChange()` while remaining cleanup continues.
 * Phase does not depend on other ZekStack libraries.
 
 ## Examples
@@ -154,7 +157,7 @@ For the full API, see [`docs/api.md`](docs/api.md).
 | PSRAM | Optional for task stacks when ESP-IDF support is available |
 | Dependencies | none |
 | Exceptions | Not used |
-| Status | Early-stage `0.0.1` |
+| Status | `0.1.0` release candidate |
 
 ## Configuration
 
