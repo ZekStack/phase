@@ -18,7 +18,7 @@ extern "C" {
 #define PHASE_HAS_IDF_TASK_CAPS 0
 #endif
 
-#if PHASE_HAS_IDF_TASK_CAPS && defined(configSUPPORT_STATIC_ALLOCATION) &&                      \
+#if PHASE_HAS_IDF_TASK_CAPS && defined(configSUPPORT_STATIC_ALLOCATION) && \
     (configSUPPORT_STATIC_ALLOCATION == 1) && defined(MALLOC_CAP_SPIRAM)
 #define PHASE_CAN_USE_EXTERNAL_STACKS 1
 #else
@@ -48,7 +48,7 @@ inline bool isValidStackSize(size_t stackBytes) {
 
 inline size_t currentStackHighWaterMarkBytes() {
 #if defined(INCLUDE_uxTaskGetStackHighWaterMark) && (INCLUDE_uxTaskGetStackHighWaterMark == 1)
-	return static_cast<size_t>(uxTaskGetStackHighWaterMark(nullptr)) * sizeof(StackType_t);
+	return static_cast<size_t>(uxTaskGetStackHighWaterMark(nullptr));
 #else
 	return 0;
 #endif
@@ -66,14 +66,10 @@ inline BaseType_t createTask(
     bool &createdWithCaps
 ) {
 	createdWithCaps = false;
-	if (!isValidStackSize(stackBytes)) {
-		return pdFAIL;
-	}
+	if (!isValidStackSize(stackBytes)) return pdFAIL;
 	if (usePsramStack) {
 #if PHASE_CAN_USE_EXTERNAL_STACKS
-		if (!hasExternalStackSupport()) {
-			return pdFAIL;
-		}
+		if (!hasExternalStackSupport()) return pdFAIL;
 		const BaseType_t created = xTaskCreatePinnedToCoreWithCaps(
 		    entry,
 		    name,
@@ -93,15 +89,7 @@ inline BaseType_t createTask(
 	if (coreId == tskNO_AFFINITY) {
 		return xTaskCreate(entry, name, static_cast<uint32_t>(stackBytes), arg, priority, handle);
 	}
-	return xTaskCreatePinnedToCore(
-	    entry,
-	    name,
-	    static_cast<uint32_t>(stackBytes),
-	    arg,
-	    priority,
-	    handle,
-	    coreId
-	);
+	return xTaskCreatePinnedToCore(entry, name, static_cast<uint32_t>(stackBytes), arg, priority, handle, coreId);
 }
 
 inline void deleteCurrentTask(bool withCaps) {
@@ -110,6 +98,8 @@ inline void deleteCurrentTask(bool withCaps) {
 		vTaskDeleteWithCaps(xTaskGetCurrentTaskHandle());
 		return;
 	}
+#else
+	(void)withCaps;
 #endif
 	vTaskDelete(nullptr);
 }
