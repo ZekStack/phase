@@ -18,7 +18,7 @@ PhaseStepBuilder Phase::addStep(const char *name, PhaseCallback initCallback, Ph
 	if (_impl->findNodeIndex(name) < _impl->nodes.size()) {
 		return PhaseStepBuilder(this, 0, PhaseResult::failure(PhaseStatus::DuplicateName, "duplicate node name"));
 	}
-	PhaseNode node;
+	PhaseNode node(_impl->config.memory.allocation);
 	node.type = PhaseNodeType::Step;
 	node.name = name;
 	node.dependencyNames.reserve(_impl->config.maxDependenciesPerNode);
@@ -47,7 +47,7 @@ PhaseGroupBuilder Phase::addGroup(const char *name) {
 	if (_impl->findNodeIndex(name) < _impl->nodes.size()) {
 		return PhaseGroupBuilder(this, 0, PhaseResult::failure(PhaseStatus::DuplicateName, "duplicate node name"));
 	}
-	PhaseNode node;
+	PhaseNode node(_impl->config.memory.allocation);
 	node.type = PhaseNodeType::Group;
 	node.name = name;
 	node.dependencyNames.reserve(_impl->config.maxDependenciesPerNode);
@@ -72,7 +72,9 @@ PhaseResult Phase::addDependency(size_t index, const char *name) {
 		return PhaseResult::failure(PhaseStatus::TooManyDependencies, "too many dependencies");
 	}
 	if (std::find(node.dependencyNames.begin(), node.dependencyNames.end(), name) == node.dependencyNames.end()) {
-		node.dependencyNames.emplace_back(name);
+		Strata::String dependency{Strata::Allocator<char>{node.allocationPlacement}};
+		dependency = name;
+		node.dependencyNames.push_back(std::move(dependency));
 		_impl->graphPrepared = false;
 	}
 	return PhaseResult::success("dependency added");
