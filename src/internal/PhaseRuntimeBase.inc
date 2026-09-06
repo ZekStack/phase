@@ -1,17 +1,15 @@
 #include "Phase.h"
 
-#include "internal/PhaseMutex.h"
-#include "internal/PhaseTaskSupport.h"
+#include <strata/freertos/Mutex.h>
+#include <strata/freertos/Task.h>
 
 #include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstring>
-#include <freertos/semphr.h>
 #include <memory>
-#include <new>
+#include <optional>
 #include <utility>
-#include <vector>
 
 namespace {
 constexpr uint32_t kWaitPollMs = 10;
@@ -21,12 +19,53 @@ constexpr uint8_t kInitTimeout = 0;
 constexpr uint8_t kStartTimeout = 1;
 constexpr uint8_t kStopTimeout = 2;
 constexpr uint8_t kDeinitTimeout = 3;
+constexpr size_t kMinStackSizeBytes = 1024;
 
 void copyText(char *destination, size_t destinationSize, const char *source) {
 	if (destination == nullptr || destinationSize == 0) return;
 	if (source == nullptr) source = "";
 	std::snprintf(destination, destinationSize, "%s", source);
 }
+
+bool isValidStackSize(size_t stackBytes) {
+	return stackBytes >= kMinStackSizeBytes && (stackBytes % sizeof(StackType_t)) == 0;
+}
+
+template <typename T>
+class PhasePlacedVector {
+  public:
+	PhasePlacedVector() noexcept
+	    : _storage(std::in_place, Strata::Allocator<T>{Strata::Placement::Default}) {}
+
+	void resetPlacement(Strata::Placement placement) {
+		_storage.reset();
+		_storage.emplace(Strata::Allocator<T>{placement});
+	}
+
+	bool empty() const { return _storage->empty(); }
+	size_t size() const { return _storage->size(); }
+	void clear() { _storage->clear(); }
+	void reserve(size_t capacity) { _storage->reserve(capacity); }
+	void resize(size_t size) { _storage->resize(size); }
+
+	T &operator[](size_t index) { return (*_storage)[index]; }
+	const T &operator[](size_t index) const { return (*_storage)[index]; }
+
+	auto begin() { return _storage->begin(); }
+	auto end() { return _storage->end(); }
+	auto begin() const { return _storage->begin(); }
+	auto end() const { return _storage->end(); }
+	auto rbegin() { return _storage->rbegin(); }
+	auto rend() { return _storage->rend(); }
+
+	template <typename U>
+	void push_back(U &&value) {
+		_storage->push_back(std::forward<U>(value));
+	}
+
+  private:
+	std::optional<Strata::Vector<T>> _storage;
+};
 
 enum class DependencyState : uint8_t {
 	Ready,
@@ -45,13 +84,39 @@ struct PhaseNodeState {
 	bool skipped = false;
 	bool hasStartCallback = false;
 };
+
+class PhaseLock {
+  public:
+	explicit PhaseLock(Strata::FreeRTOS::RecursiveMutex &mutex)
+	    : _mutex(mutex), _locked(mutex.lock()) {}
+
+	~PhaseLock() {
+		if (_locked) _mutex.unlock();
+	}
+
+	PhaseLock(const PhaseLock &) = delete;
+	PhaseLock &operator=(const PhaseLock &) = delete;
+
+	explicit operator bool() const { return _locked; }
+
+  private:
+	Strata::FreeRTOS::RecursiveMutex &_mutex;
+	bool _locked = false;
+};
 } // namespace
 
 struct PhaseNode {
+	explicit PhaseNode(Strata::Placement placement = Strata::Placement::Default)
+	    : allocationPlacement(placement),
+	      name(Strata::Allocator<char>{placement}),
+	      dependencyNames(Strata::Allocator<Strata::String>{placement}),
+	      dependencies(Strata::Allocator<size_t>{placement}) {}
+
+	Strata::Placement allocationPlacement = Strata::Placement::Default;
 	PhaseNodeType type = PhaseNodeType::Step;
-	std::string name;
-	std::vector<std::string> dependencyNames;
-	std::vector<size_t> dependencies;
+	Strata::String name;
+	Strata::Vector<Strata::String> dependencyNames;
+	Strata::Vector<size_t> dependencies;
 	PhaseCallback initCallback;
 	PhaseCallback deinitCallback;
 	PhaseCallback startCallback;
@@ -78,19 +143,18 @@ struct PhaseNode {
 };
 
 struct PhaseImpl {
+	PhaseImpl() noexcept : mutex(Strata::FreeRTOS::RecursiveMutex::create()) {}
+
 	PhaseConfig config{};
-	PhaseMutex mutex;
-	std::vector<PhaseNode> nodes;
-	std::vector<size_t> initOrder;
-	std::vector<size_t> startOrder;
-	std::vector<uint8_t> validationMarks;
+	Strata::FreeRTOS::RecursiveMutex mutex;
+	PhasePlacedVector<PhaseNode> nodes;
+	PhasePlacedVector<size_t> initOrder;
+	PhasePlacedVector<size_t> startOrder;
+	PhasePlacedVector<uint8_t> validationMarks;
 	std::shared_ptr<PhaseChangeCallback> changeCallback;
 	std::shared_ptr<PhaseReadyCallback> readyCallback;
 	std::shared_ptr<PhaseFailedCallback> failedCallback;
-	TaskHandle_t taskHandle = nullptr;
-	SemaphoreHandle_t taskStarted = nullptr;
-	SemaphoreHandle_t taskExited = nullptr;
-	bool createdWithCaps = false;
+	Strata::FreeRTOS::Task task;
 	bool initialized = false;
 	bool registrationClosed = false;
 	bool graphPrepared = false;
@@ -98,20 +162,25 @@ struct PhaseImpl {
 	bool stopRequested = false;
 	bool ending = false;
 	bool taskRunning = false;
-	bool taskExitComplete = false;
+	bool taskExitReady = false;
 	bool paused = false;
-	bool deleteImplOnExit = false;
 	std::array<char, kEventTextBytes> pauseReason{};
 	PhaseState currentState = PhaseState::Idle;
-	PhaseStackType actualStackType = PhaseStackType::Internal;
+	Strata::Region stackRegion = Strata::Region::Unknown;
 	uint32_t bootCount = 0;
 	uint32_t rollbackCount = 0;
 	uint32_t changeCount = 0;
 	size_t stackHighWaterMarkBytes = 0;
 
-	~PhaseImpl() {
-		if (taskStarted != nullptr) vSemaphoreDelete(taskStarted);
-		if (taskExited != nullptr) vSemaphoreDelete(taskExited);
+	void initializeStorage(Strata::Placement placement, const PhaseConfig &incomingConfig) {
+		nodes.resetPlacement(placement);
+		initOrder.resetPlacement(placement);
+		startOrder.resetPlacement(placement);
+		validationMarks.resetPlacement(placement);
+		nodes.reserve(incomingConfig.maxNodes);
+		initOrder.reserve(incomingConfig.maxNodes);
+		startOrder.reserve(incomingConfig.maxNodes);
+		validationMarks.resize(incomingConfig.maxNodes);
 	}
 
 	static void taskEntry(void *arg) {
@@ -123,7 +192,7 @@ struct PhaseImpl {
 		{
 			PhaseLock lock(mutex);
 			if (!lock) return PhaseResult::failure(PhaseStatus::InternalError, "lock failed");
-			handle = taskHandle;
+			handle = task.handle();
 		}
 		if (handle == nullptr) {
 			return PhaseResult::failure(PhaseStatus::NotInitialized, "phase task is not available");
@@ -256,7 +325,7 @@ struct PhaseImpl {
 				return PhaseResult::failure(PhaseStatus::InvalidCallback, "init callback is required");
 			}
 			node.dependencies.clear();
-			for (const std::string &dependencyName : node.dependencyNames) {
+			for (const Strata::String &dependencyName : node.dependencyNames) {
 				const size_t dependencyIndex = findNodeIndex(dependencyName.c_str());
 				if (dependencyIndex >= nodes.size()) {
 					return PhaseResult::failure(PhaseStatus::MissingDependency, "dependency was not registered");
@@ -432,4 +501,3 @@ struct PhaseImpl {
 		emitChange(state, nodes[index].type, nodes[index].name.c_str(), result.message, result);
 		return PhaseResult::success("optional node failed");
 	}
-
