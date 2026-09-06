@@ -1,10 +1,10 @@
 # API Reference
 
-This page summarizes the public API declared in `src/Phase.h`.
+This page summarizes the public API declared in `src/Phase.h` for Phase v0.2.0.
 
 ## Results
 
-Phase does not use exceptions. Operations return `PhaseResult`.
+Phase does not intentionally throw exceptions. Operations return `PhaseResult`.
 
 | Field | Meaning |
 | --- | --- |
@@ -14,19 +14,33 @@ Phase does not use exceptions. Operations return `PhaseResult`.
 
 `PhaseStatus` values include `Ok`, `NotInitialized`, `AlreadyInitialized`, `InvalidArgument`, `OutOfMemory`, `TaskCreateFailed`, `TooManyNodes`, `TooManyDependencies`, `DuplicateName`, `MissingDependency`, `CircularDependency`, `InvalidCallback`, `RegistrationClosed`, `Busy`, `Timeout`, `CallbackFailed`, `DependencyFailed`, and `InternalError`.
 
+## PhaseConfig
+
+Phase v0.2.0 uses Strata for memory placement and owned FreeRTOS storage.
+
+```cpp
+PhaseConfig config;
+config.memory.allocation = Strata::Placement::Default;
+config.memory.taskStack = Strata::Placement::PreferExternal;
+```
+
+`memory.allocation` controls movable Phase-owned graph storage. `memory.taskStack` controls the Phase task stack. See `configuration.md` for the complete placement contract.
+
+The old `PhaseStackType` API was removed in v0.2.0.
+
 ## Phase
 
 | Method | Purpose |
 | --- | --- |
-| `init(config)` | Create the Phase task and prepare registration. |
+| `init(config)` | Validate configuration, create Strata-backed storage/task ownership, and prepare registration. |
 | `start()` | Request async boot. |
 | `stop()` | Request reverse stop/deinit. |
-| `end(timeoutMs)` | Stop the task and permanently end this Phase instance. |
+| `end(timeoutMs)` | Stop the task, externally reclaim Strata task storage, and permanently end this Phase instance. |
 | `pause(reason)` | Request cooperative pause. |
 | `resume()` | Continue lifecycle progression. |
 | `isPaused()` | Return current pause flag. |
 | `state()` | Return current lifecycle state. |
-| `getDiagnostics()` | Return aggregate diagnostics. |
+| `getDiagnostics()` | Return aggregate and memory-placement diagnostics. |
 | `onChange(callback)` | Register progress callback. |
 | `onReady(callback)` | Register ready callback. |
 | `onFailed(callback)` | Register terminal failure callback. |
@@ -67,15 +81,13 @@ Phase does not use exceptions. Operations return `PhaseResult`.
 
 Lifecycle callbacks may return:
 
-```txt
+```text
 void
 bool
 PhaseResult
 ```
 
-`false` maps to `PhaseStatus::CallbackFailed`.
-
-Group conditions return `bool`.
+`false` maps to `PhaseStatus::CallbackFailed`. Group conditions return `bool`.
 
 ## Change events
 
@@ -98,12 +110,33 @@ Callbacks are invoked synchronously from the Phase task. Keep them short.
 
 ## Diagnostics
 
-`PhaseDiag` reports node counts, boot count, rollback count, change count, state, stack memory preference, and the task stack high-water mark after the task ends.
+`PhaseDiag` reports lifecycle counts plus Strata placement information:
 
-`startedCount` counts only steps whose `start()` callback completed. Steps without a `start()` callback can become ready without being counted as started.
+| Field | Meaning |
+| --- | --- |
+| `nodeCount` | Number of registered nodes. |
+| `initializedCount` | Currently initialized steps. |
+| `startedCount` | Steps whose start callback completed. |
+| `readyCount` | Ready nodes. |
+| `failedCount` | Failed nodes. |
+| `skippedCount` | Skipped optional nodes. |
+| `bootCount` | Number of boot attempts. |
+| `rollbackCount` | Number of rollbacks. |
+| `changeCount` | Number of emitted change events. |
+| `stackHighWaterMarkBytes` | Phase task stack high-water mark captured during final teardown. |
+| `state` | Current lifecycle state. |
+| `requestedStackPlacement` | Requested `Strata::Placement` for the Phase task stack. |
+| `stackRegion` | Observed `Strata::Region` for the task stack. |
+| `allocationPlacement` | Requested placement for Phase-owned graph storage. |
+
+Requested placement and observed region are separate because `PreferExternal` may fall back to internal memory.
 
 ## Stop and end behavior
 
 `stop()` is a no-op when Phase is idle, stopped, or failed. It requests shutdown when Phase is booting, starting, ready, or actively paused. If `start()` was queued but the Phase task has not started booting yet, `stop()` cancels that pending start.
 
-`end()` is final teardown for a Phase instance. After `end()` succeeds, create a new `Phase` object instead of calling `init()` again on the same object.
+`end()` must run outside the Phase task. The Phase task performs lifecycle shutdown, records diagnostics, publishes an external-deletion handoff, and suspends. The caller then releases the Strata-owned static task stack and task control block.
+
+`end()` returns `Busy` when called from a Phase callback. A `Phase` object must not be destroyed from one of its own Phase callbacks.
+
+After `end()` succeeds, create a new `Phase` object instead of calling `init()` again on the same object.
