@@ -1,17 +1,51 @@
 # Configuration
 
-`PhaseConfig` controls the task, lifecycle timeouts, polling, and registration limits.
+`PhaseConfig` controls memory placement, the Phase task, lifecycle timeouts, polling, and registration limits.
 
 ```cpp
 PhaseConfig config;
+config.memory.allocation = Strata::Placement::Default;
+config.memory.taskStack = Strata::Placement::PreferExternal;
 config.stackSizeBytes = 4096;
 config.priority = 1;
 config.coreId = tskNO_AFFINITY;
 config.taskName = "phase-task";
-config.stackType = PhaseStackType::Auto;
 
 PhaseResult result = phase.init(config);
 ```
+
+## Memory policy
+
+Phase v0.2.0 uses `Strata::MemoryPolicy`, the same memory-policy shape used across Strata-backed ZekStack libraries.
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `memory.allocation` | `Default` | Placement for movable Phase-owned graph storage. |
+| `memory.taskStack` | `PreferExternal` | Placement for the Phase task stack. |
+
+`memory.allocation` controls node records, node and dependency names, dependency indexes, init/start order storage, and graph validation storage.
+
+`memory.taskStack` controls the Phase task stack. The task control block and recursive mutex control storage remain internal through Strata.
+
+Available placements are:
+
+* `Strata::Placement::Default` - use the Strata backend default.
+* `Strata::Placement::Internal` - require internal memory.
+* `Strata::Placement::PreferExternal` - prefer external memory and fall back to internal memory.
+* `Strata::Placement::RequireExternal` - require external memory and fail when it is unavailable.
+
+The default task placement preserves the old `PhaseStackType::Auto` behavior.
+
+```cpp
+PhaseDiag diag = phase.getDiagnostics();
+Serial.printf(
+    "requested=%s actual=%s\n",
+    Strata::toString(diag.requestedStackPlacement),
+    Strata::toString(diag.stackRegion)
+);
+```
+
+The requested placement and actual region are intentionally separate because `PreferExternal` may fall back to internal memory.
 
 ## Task options
 
@@ -21,9 +55,8 @@ PhaseResult result = phase.init(config);
 | `priority` | `1` | Phase task priority. |
 | `coreId` | `tskNO_AFFINITY` | Core affinity. |
 | `taskName` | `"phase-task"` | FreeRTOS task name. |
-| `stackType` | `Auto` | Internal RAM or PSRAM stack preference. |
 
-`PhaseStackType::Auto` prefers PSRAM task stacks when the ESP-IDF support is available and falls back to internal RAM.
+Strata owns the Phase task stack and task control block. Phase no longer contains ESP-IDF heap-capability or task-allocation logic.
 
 ## Limits
 
@@ -32,7 +65,7 @@ PhaseResult result = phase.init(config);
 | `maxNodes` | `32` | Maximum total steps and groups. |
 | `maxDependenciesPerNode` | `8` | Maximum dependencies for one node. |
 
-These limits bound how many nodes and dependencies Phase accepts. Registration still uses dynamic allocation internally through `std::vector`, `std::string`, and `std::function`, so register all nodes during setup and avoid runtime registration.
+These limits bound how many nodes and dependencies Phase accepts. Phase pre-reserves graph backing from these limits during initialization/registration so lifecycle execution can remain allocation-free.
 
 ## Timeouts
 
@@ -47,7 +80,7 @@ These limits bound how many nodes and dependencies Phase accepts. Registration s
 
 Lifecycle callback timeouts are cooperative. Phase measures elapsed time after a callback returns. A callback that never returns cannot be interrupted by Phase.
 
-Because callbacks cannot be interrupted, destroying a `Phase` object waits indefinitely for the Phase task to exit. If a lifecycle callback never returns, the destructor can block forever.
+Because Strata owns the static task storage, final task cleanup must happen from another task context. `end()` therefore returns `Busy` when called from the Phase task. A `Phase` object must not be destroyed from one of its own callbacks.
 
 Calling `end()` performs final teardown for the current `Phase` instance. A successfully ended instance cannot be initialized again.
 
@@ -72,3 +105,14 @@ phase.addGroup("internet")
     .condition(hasInternet, 30000)
     .conditionPollInterval(250);
 ```
+
+## Migrating from v0.1.x
+
+| v0.1.x | v0.2.0 |
+| --- | --- |
+| `PhaseStackType::Auto` | `Strata::Placement::PreferExternal` |
+| `PhaseStackType::Internal` | `Strata::Placement::Internal` |
+| `PhaseStackType::Psram` | `Strata::Placement::RequireExternal` |
+| `config.stackType` | `config.memory.taskStack` |
+| `diag.requestedStackType` | `diag.requestedStackPlacement` |
+| `diag.actualStackType` | `diag.stackRegion` |
