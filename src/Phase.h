@@ -1,10 +1,10 @@
 #pragma once
 
 #include <Arduino.h>
+#include <Strata.h>
+
 #include <functional>
 #include <initializer_list>
-#include <memory>
-#include <string>
 #include <type_traits>
 
 #include <freertos/FreeRTOS.h>
@@ -55,12 +55,6 @@ enum class PhaseNodeType : uint8_t {
 	None,
 };
 
-enum class PhaseStackType : uint8_t {
-	Auto,
-	Internal,
-	Psram,
-};
-
 struct PhaseResult {
 	bool result = false;
 	PhaseStatus status = PhaseStatus::InternalError;
@@ -75,11 +69,15 @@ struct PhaseResult {
 };
 
 struct PhaseConfig {
+	Strata::MemoryPolicy memory{
+	    .allocation = Strata::Placement::Default,
+	    .taskStack = Strata::Placement::PreferExternal,
+	};
+
 	uint32_t stackSizeBytes = 4096;
 	UBaseType_t priority = 1;
 	BaseType_t coreId = tskNO_AFFINITY;
 	const char *taskName = "phase-task";
-	PhaseStackType stackType = PhaseStackType::Auto;
 	size_t maxNodes = 32;
 	size_t maxDependenciesPerNode = 8;
 	uint32_t defaultInitTimeoutMs = 30000;
@@ -119,8 +117,9 @@ struct PhaseDiag {
 	uint32_t changeCount = 0;
 	size_t stackHighWaterMarkBytes = 0;
 	PhaseState state = PhaseState::Idle;
-	PhaseStackType requestedStackType = PhaseStackType::Auto;
-	PhaseStackType actualStackType = PhaseStackType::Internal;
+	Strata::Placement requestedStackPlacement = Strata::Placement::Default;
+	Strata::Region stackRegion = Strata::Region::Unknown;
+	Strata::Placement allocationPlacement = Strata::Placement::Default;
 };
 
 using PhaseCallback = std::function<PhaseResult()>;
@@ -303,5 +302,5 @@ class Phase {
 	);
 	PhaseResult setGroupPollInterval(size_t index, uint32_t intervalMs);
 
-	std::unique_ptr<PhaseImpl> _impl;
+	Strata::UniquePtr<PhaseImpl> _impl;
 };
