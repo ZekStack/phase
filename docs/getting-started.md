@@ -1,10 +1,17 @@
 # Getting Started
 
-Phase runs application lifecycle work from its own FreeRTOS task.
+Phase runs application lifecycle work from its own Strata-backed FreeRTOS task. Phase `v0.2.0` requires Strata `v0.1.1`.
+
+PlatformIO resolves Strata from Phase's `library.json`. Arduino IDE users should install both repositories:
+
+```text
+Arduino/libraries/Strata
+Arduino/libraries/Phase
+```
 
 The usual flow is:
 
-```txt
+```text
 phase.init()
 phase.add(...)
 phase.addGroup(...)
@@ -47,11 +54,22 @@ void loop() {
 }
 ```
 
+The default v0.2.0 memory policy keeps ordinary graph allocation on the Strata backend default and preserves the old automatic stack behavior by preferring external memory with internal fallback:
+
+```cpp
+PhaseConfig config;
+config.memory.allocation = Strata::Placement::Default;
+config.memory.taskStack = Strata::Placement::PreferExternal;
+phase.init(config);
+```
+
+For explicit placement, set either field to `Internal`, `PreferExternal`, or `RequireExternal`. See `configuration.md` for the full contract.
+
 ## Steps
 
 A step is a real module. It can have:
 
-```txt
+```text
 init
 deinit
 start
@@ -77,6 +95,8 @@ phase.add("database", initDatabase, deinitDatabase)
 ```
 
 During the init wave, step nodes initialize after their step dependencies have initialized. Groups are not evaluated in the init wave. During the start/readiness wave, steps start and groups are evaluated only after their dependencies are ready.
+
+Phase-owned node records, names, dependency names/indexes, and ordering/validation backing use `config.memory.allocation`.
 
 ## Groups
 
@@ -112,7 +132,7 @@ Pause is cooperative. It takes effect before the next lifecycle action or the ne
 
 `stop()` requests reverse shutdown:
 
-```txt
+```text
 started steps stop in reverse start order
 initialized steps deinitialize in reverse init order
 groups reset internally
@@ -124,4 +144,6 @@ phase.stop();
 
 Calling `stop()` while Phase is idle, stopped, or failed is a success no-op. If `pause()` was called before `start()`, a pre-start `stop()` does not clear that pause; the later `start()` still waits for `resume()`.
 
-`end()` is final teardown. After `end()` succeeds, create a new `Phase` object instead of reusing the same instance.
+`end()` is final teardown. The Phase task publishes an external-deletion handoff and suspends; the calling task then releases the Strata-owned task stack and control block. `end()` therefore cannot be called from a Phase callback and returns `Busy` in that context.
+
+After `end()` succeeds, create a new `Phase` object instead of reusing the same instance.
