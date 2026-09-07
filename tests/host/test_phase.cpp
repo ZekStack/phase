@@ -190,6 +190,29 @@ void testPendingStartCancellationAndRestart() {
 	require(waitForState(phase, PhaseState::Ready), "restart from stopped should become ready");
 	require(static_cast<bool>(phase.end()), "end should succeed");
 }
+
+void testMemoryPolicy() {
+	PhaseConfig defaults;
+	require(defaults.memory.allocation == Strata::Placement::Default, "default allocation placement should stay backend-default");
+	require(defaults.memory.taskStack == Strata::Placement::PreferExternal, "default task stack should preserve old Auto semantics");
+
+	Phase phase;
+	PhaseConfig config;
+	config.memory.allocation = Strata::Placement::PreferExternal;
+	config.memory.taskStack = Strata::Placement::Internal;
+	require(static_cast<bool>(phase.init(config)), "internal Strata policy should initialize");
+	PhaseDiag diag = phase.getDiagnostics();
+	require(diag.requestedStackPlacement == Strata::Placement::Internal, "diagnostics should expose requested stack placement");
+	require(diag.stackRegion == Strata::Region::Internal, "diagnostics should expose actual stack region");
+	require(diag.allocationPlacement == Strata::Placement::PreferExternal, "diagnostics should expose graph allocation placement");
+	require(static_cast<bool>(phase.end()), "policy test should end cleanly");
+
+	Phase invalidPhase;
+	PhaseConfig invalid;
+	invalid.memory.taskStack = static_cast<Strata::Placement>(0xFF);
+	PhaseResult invalidResult = invalidPhase.init(invalid);
+	require(!invalidResult && invalidResult.status == PhaseStatus::InvalidArgument, "invalid Strata policy should be rejected");
+}
 }
 
 int main() {
@@ -199,6 +222,7 @@ int main() {
 	testCallbackSafety();
 	testLifecycleDoesNotAllocate();
 	testPendingStartCancellationAndRestart();
+	testMemoryPolicy();
 	std::cout << "Phase host tests passed\n";
 	return 0;
 }

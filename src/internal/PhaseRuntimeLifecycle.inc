@@ -275,11 +275,11 @@
 	}
 
 	void taskLoop() {
+		ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 		{
 			PhaseLock lock(mutex);
 			if (lock) taskRunning = true;
 		}
-		if (taskStarted != nullptr) xSemaphoreGive(taskStarted);
 		while (!isEnding()) {
 			ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 			if (isEnding()) break;
@@ -298,34 +298,17 @@
 			if (localStart && !localStop) (void)runBoot();
 		}
 		if (shouldStop()) (void)runShutdown();
-		bool localCreatedWithCaps = false;
-		bool localDeleteImpl = false;
-		SemaphoreHandle_t localTaskExited = nullptr;
 		{
 			PhaseLock lock(mutex);
 			if (lock) {
 				currentState = PhaseState::Ended;
+				stackHighWaterMarkBytes = task.stackHighWaterMarkBytes();
+				stackRegion = task.stackRegion();
 				taskRunning = false;
-				stackHighWaterMarkBytes = phase_task_support::currentStackHighWaterMarkBytes();
-				localCreatedWithCaps = createdWithCaps;
-				localDeleteImpl = deleteImplOnExit;
-				localTaskExited = taskExited;
+				taskExitReady = true;
 			}
 		}
-		if (localDeleteImpl) {
-			PhaseImpl *self = this;
-			delete self;
-		} else {
-			if (localTaskExited != nullptr) xSemaphoreGive(localTaskExited);
-			{
-				PhaseLock lock(mutex);
-				if (lock) {
-					taskExitComplete = true;
-					taskHandle = nullptr;
-				}
-			}
-		}
-		phase_task_support::deleteCurrentTask(localCreatedWithCaps);
+		vTaskSuspend(nullptr);
+		for (;;) vTaskDelay(portMAX_DELAY);
 	}
 };
-

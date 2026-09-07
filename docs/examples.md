@@ -11,10 +11,13 @@ The repository includes Arduino examples under `examples/`.
 | `OptionalNodes` | Optional failure and skipped optional dependents. |
 | `BindableCallbacks` | Calling private methods through lambdas. |
 | `ManualShutdown` | Requesting shutdown after ready. |
+| `MemoryPolicy` | Configuring Strata graph/task placement and inspecting actual stack region. |
 
 ## Recommended order
 
 Start with `Basic`, then read `Dependencies` and `Groups`.
+
+Use `MemoryPolicy` when integrating Phase into a larger Strata-backed application. It shows both `memory.allocation` and `memory.taskStack`, plus the requested-placement/actual-region diagnostic split.
 
 `PauseResume` and `OptionalNodes` cover behavior that matters in larger products.
 

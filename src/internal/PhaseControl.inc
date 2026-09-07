@@ -47,38 +47,39 @@ PhaseResult Phase::stop() {
 PhaseResult Phase::end(uint32_t timeoutMs) {
 	if (!_impl) return PhaseResult::success("phase ended");
 	TaskHandle_t handle = nullptr;
-	SemaphoreHandle_t taskExited = nullptr;
 	{
 		PhaseLock lock(_impl->mutex);
 		if (!lock) return PhaseResult::failure(PhaseStatus::InternalError, "lock failed");
 		if (!_impl->initialized) return PhaseResult::success("phase ended");
-		if (_impl->taskHandle != nullptr && _impl->taskHandle == xTaskGetCurrentTaskHandle()) {
+		handle = _impl->task.handle();
+		if (handle != nullptr && handle == xTaskGetCurrentTaskHandle()) {
 			return PhaseResult::failure(PhaseStatus::Busy, "end cannot be called from the Phase task");
 		}
 		_impl->ending = true;
 		_impl->stopRequested = true;
 		_impl->startRequested = false;
-		handle = _impl->taskHandle;
-		taskExited = _impl->taskExited;
 	}
 	if (handle != nullptr) xTaskNotifyGive(handle);
+
 	const uint32_t startMs = millis();
 	while (true) {
+		bool readyForDelete = false;
 		{
 			PhaseLock lock(_impl->mutex);
-			if (lock && _impl->taskExitComplete) {
-				_impl->initialized = false;
-				_impl->currentState = PhaseState::Ended;
-				return PhaseResult::success("phase ended");
-			}
+			if (lock) readyForDelete = _impl->taskExitReady;
+		}
+		if (readyForDelete) {
+			_impl->task.reset();
+			PhaseLock lock(_impl->mutex);
+			if (!lock) return PhaseResult::failure(PhaseStatus::InternalError, "lock failed");
+			_impl->initialized = false;
+			_impl->currentState = PhaseState::Ended;
+			return PhaseResult::success("phase ended");
 		}
 		if (timeoutMs > 0 && millis() - startMs >= timeoutMs) {
 			return PhaseResult::failure(PhaseStatus::Timeout, "phase end timed out");
 		}
-		const TickType_t waitTicks = timeoutMs == 0 ? pdMS_TO_TICKS(kWaitPollMs) :
-		                             pdMS_TO_TICKS(std::min<uint32_t>(kWaitPollMs, timeoutMs));
-		if (taskExited != nullptr) (void)xSemaphoreTake(taskExited, waitTicks);
-		else vTaskDelay(waitTicks);
+		vTaskDelay(pdMS_TO_TICKS(kWaitPollMs));
 	}
 }
 
@@ -140,15 +141,21 @@ PhaseDiag Phase::getDiagnostics() {
 	diag.changeCount = _impl->changeCount;
 	diag.stackHighWaterMarkBytes = _impl->stackHighWaterMarkBytes;
 	diag.state = _impl->currentState;
-	diag.requestedStackType = _impl->config.stackType;
-	diag.actualStackType = _impl->actualStackType;
+	diag.requestedStackPlacement = _impl->config.memory.taskStack;
+	diag.stackRegion = _impl->stackRegion;
+	diag.allocationPlacement = _impl->config.memory.allocation;
 	return diag;
 }
 
 void Phase::onChange(PhaseChangeCallback callback) {
 	if (!_impl) return;
 	std::shared_ptr<PhaseChangeCallback> replacement;
-	if (callback) replacement = std::make_shared<PhaseChangeCallback>(std::move(callback));
+	if (callback) {
+		replacement = Strata::makeShared<PhaseChangeCallback>(
+		    Strata::Placement::Internal,
+		    std::move(callback)
+		);
+	}
 	PhaseLock lock(_impl->mutex);
 	if (lock) _impl->changeCallback = std::move(replacement);
 }
@@ -156,7 +163,12 @@ void Phase::onChange(PhaseChangeCallback callback) {
 void Phase::onReady(PhaseReadyCallback callback) {
 	if (!_impl) return;
 	std::shared_ptr<PhaseReadyCallback> replacement;
-	if (callback) replacement = std::make_shared<PhaseReadyCallback>(std::move(callback));
+	if (callback) {
+		replacement = Strata::makeShared<PhaseReadyCallback>(
+		    Strata::Placement::Internal,
+		    std::move(callback)
+		);
+	}
 	PhaseLock lock(_impl->mutex);
 	if (lock) _impl->readyCallback = std::move(replacement);
 }
@@ -164,7 +176,12 @@ void Phase::onReady(PhaseReadyCallback callback) {
 void Phase::onFailed(PhaseFailedCallback callback) {
 	if (!_impl) return;
 	std::shared_ptr<PhaseFailedCallback> replacement;
-	if (callback) replacement = std::make_shared<PhaseFailedCallback>(std::move(callback));
+	if (callback) {
+		replacement = Strata::makeShared<PhaseFailedCallback>(
+		    Strata::Placement::Internal,
+		    std::move(callback)
+		);
+	}
 	PhaseLock lock(_impl->mutex);
 	if (lock) _impl->failedCallback = std::move(replacement);
 }

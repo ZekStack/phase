@@ -2,7 +2,7 @@
 
 Phase is an async application lifecycle orchestration library for ESP32.
 
-Phase helps you boot and shut down larger Arduino ESP32 applications in a predictable order. It is designed for projects with multiple modules that depend on each other and focuses on dependency-ordered lifecycle steps, readiness gates, cooperative pause/resume, rollback, and result-based errors.
+Phase helps you boot and shut down larger Arduino ESP32 applications in a predictable order. It owns lifecycle orchestration and dependency policy while [Strata](https://github.com/ZekStack/strata) owns Phase memory placement and low-level FreeRTOS storage.
 
 [![CI](https://github.com/ZekStack/phase/actions/workflows/ci.yml/badge.svg)](https://github.com/ZekStack/phase/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/ZekStack/phase?sort=semver)](https://github.com/ZekStack/phase/releases)
@@ -14,9 +14,13 @@ Phase helps you boot and shut down larger Arduino ESP32 applications in a predic
 * **Dependency order** - steps and groups declare what must be ready first.
 * **Two-layer lifecycle** - simple modules use init/deinit, advanced modules add start/stop.
 * **Readiness groups** - wait for virtual gates such as network link or internet access.
-* **Production-minded** - thread-safe internals, no exceptions, rollback, diagnostics, and progress callbacks.
+* **Consistent memory policy** - `Strata::MemoryPolicy` controls graph allocations and task-stack placement.
+* **Strata-owned FreeRTOS storage** - the Phase task stack, task control block, and recursive mutex storage are owned by Strata.
+* **Production-minded** - thread-safe internals, rollback, diagnostics, progress callbacks, and allocation-free lifecycle execution after registration.
 
-## Install
+## Dependency
+
+Phase `v0.2.0` requires Strata `v0.1.1`.
 
 ### PlatformIO
 
@@ -27,7 +31,7 @@ board = esp32dev
 framework = arduino
 
 lib_deps =
-  https://github.com/ZekStack/phase.git
+  https://github.com/ZekStack/phase.git#v0.2.0
 
 build_flags =
   -std=gnu++20
@@ -35,15 +39,18 @@ build_unflags =
   -std=gnu++11
 ```
 
+Phase's `library.json` pins Strata `v0.1.1`, so PlatformIO resolves it transitively.
+
 ### Arduino IDE
 
-Phase is not published to Arduino Library Manager yet.
+Phase and Strata are not published to Arduino Library Manager yet. Install both repositories into the Arduino libraries directory:
 
-Install it by downloading the repository ZIP or cloning it into your Arduino libraries folder.
-
-```txt
+```text
+Arduino/libraries/Strata
 Arduino/libraries/Phase
 ```
+
+Use Strata `v0.1.1` or a compatible later release.
 
 ## Quick start
 
@@ -54,35 +61,71 @@ Arduino/libraries/Phase
 Phase phase;
 
 void setup() {
-	Serial.begin(115200);
+    Serial.begin(115200);
 
-	PhaseResult initResult = phase.init();
-	if (!initResult) {
-		Serial.println(initResult.message);
-		return;
-	}
+    PhaseResult initResult = phase.init();
+    if (!initResult) {
+        Serial.println(initResult.message);
+        return;
+    }
 
-	phase.add("storage", []() {
-		Serial.println("storage init");
-	});
+    phase.add("storage", []() {
+        Serial.println("storage init");
+    });
 
-	phase.add("network", []() {
-		Serial.println("network init");
-	}).start([]() {
-		Serial.println("network start");
-	});
+    phase.add("network", []() {
+        Serial.println("network init");
+    }).start([]() {
+        Serial.println("network start");
+    });
 
-	phase.onReady([]() {
-		Serial.println("app ready");
-	});
+    phase.onReady([]() {
+        Serial.println("app ready");
+    });
 
-	phase.start();
-	Serial.println("setup continues while Phase boots");
+    phase.start();
+    Serial.println("setup continues while Phase boots");
 }
 
 void loop() {
-	delay(1000);
+    delay(1000);
 }
+```
+
+## Memory policy
+
+Phase uses the ZekStack-standard Strata configuration shape:
+
+```cpp
+PhaseConfig config;
+config.memory.allocation = Strata::Placement::PreferExternal;
+config.memory.taskStack = Strata::Placement::PreferExternal;
+
+PhaseResult result = phase.init(config);
+```
+
+`memory.allocation` controls movable Phase-owned graph storage: node records, node/dependency names, dependency indexes, lifecycle order, and validation backing.
+
+`memory.taskStack` controls the Phase task stack. Task control-block and mutex control storage remain internal through Strata.
+
+The default policy preserves Phase v0.1.0 behavior:
+
+```cpp
+allocation = Strata::Placement::Default;
+taskStack  = Strata::Placement::PreferExternal;
+```
+
+`PreferExternal` falls back to internal memory when external memory is unavailable. `RequireExternal` fails task creation rather than consuming internal memory.
+
+Diagnostics report requested placement separately from the observed memory region:
+
+```cpp
+PhaseDiag diag = phase.getDiagnostics();
+Serial.printf(
+    "requested=%s actual=%s\n",
+    Strata::toString(diag.requestedStackPlacement),
+    Strata::toString(diag.stackRegion)
+);
 ```
 
 ## Important notes
@@ -95,11 +138,26 @@ void loop() {
 * Group condition polling timeouts are enforced by the Phase task.
 * Registration closes after a successful `start()` request.
 * `stop()`, `pause()`, and `resume()` may be called from Phase callbacks. `end()` must be called from another task and returns `Busy` when called from the Phase task.
-* The destructor waits for the Phase task to stop using its internal state. Destruction from a Phase callback is deferred safely until the worker exits.
-* Registration and graph preparation use `std::vector`, `std::string`, and `std::function`. Node storage, dependency indexes, and lifecycle order are preallocated before the worker starts; lifecycle execution does not allocate.
+* A `Phase` object must not be destroyed from one of its own Phase callbacks. Strata task storage can only be reclaimed safely from another task context.
+* Graph storage is allocated during initialization/registration and pre-reserved from the configured limits. Lifecycle execution remains allocation-free.
+* Callback callables remain `std::function`; allocations performed internally by an arbitrary callable representation are outside Phase's placement contract.
 * `PhaseChange` string pointers are valid for the complete callback invocation. Event messages and pause reasons are copied into bounded internal snapshots and may be truncated to 191 characters.
 * Stop/deinit failures are best-effort and are reported through `onChange()` while remaining cleanup continues.
-* Phase does not depend on other ZekStack libraries.
+* Phase depends only on Strata within the ZekStack library ecosystem.
+
+## Migrating from v0.1.x
+
+Phase `v0.2.0` removes `PhaseStackType` and `PhaseConfig::stackType`.
+
+| v0.1.x | v0.2.0 |
+| --- | --- |
+| `PhaseStackType::Auto` | `Strata::Placement::PreferExternal` |
+| `PhaseStackType::Internal` | `Strata::Placement::Internal` |
+| `PhaseStackType::Psram` | `Strata::Placement::RequireExternal` |
+| `diag.requestedStackType` | `diag.requestedStackPlacement` |
+| `diag.actualStackType` | `diag.stackRegion` |
+
+For the old default behavior, no configuration change is required: the v0.2.0 default task placement is already `PreferExternal`.
 
 ## Examples
 
@@ -112,12 +170,7 @@ void loop() {
 | `OptionalNodes` | Optional node failure and skipped dependent behavior. |
 | `BindableCallbacks` | Bind private class methods with lambdas. |
 | `ManualShutdown` | Request reverse stop/deinit from `loop()`. |
-
-Start with:
-
-```txt
-examples/Basic
-```
+| `MemoryPolicy` | Configure Strata graph/task placement and inspect diagnostics. |
 
 ## Documentation
 
@@ -126,7 +179,7 @@ Detailed documentation is available in the `docs/` folder.
 | Document | Description |
 | --- | --- |
 | [`docs/getting-started.md`](docs/getting-started.md) | Step-by-step setup and first lifecycle flow. |
-| [`docs/configuration.md`](docs/configuration.md) | Task, timeout, limit, and polling options. |
+| [`docs/configuration.md`](docs/configuration.md) | Memory, task, timeout, limit, and polling options. |
 | [`docs/api.md`](docs/api.md) | Public classes, methods, callbacks, and result types. |
 | [`docs/examples.md`](docs/examples.md) | Explanation of all included examples. |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | Common issues and behavior notes. |
@@ -144,8 +197,6 @@ phase.onFailed([](PhaseResult result) {});
 phase.start();
 ```
 
-For the full API, see [`docs/api.md`](docs/api.md).
-
 ## Compatibility
 
 | Item | Support |
@@ -154,26 +205,10 @@ For the full API, see [`docs/api.md`](docs/api.md).
 | Platform | `espressif32` |
 | Language | C++20 |
 | Filesystem | none |
-| PSRAM | Optional for task stacks when ESP-IDF support is available |
-| Dependencies | none |
-| Exceptions | Not used |
-| Status | `0.1.0` release candidate |
-
-## Configuration
-
-```cpp
-PhaseConfig config;
-config.stackSizeBytes = 4096;
-config.priority = 1;
-config.coreId = tskNO_AFFINITY;
-config.stackType = PhaseStackType::Auto;
-config.defaultInitTimeoutMs = 30000;
-config.conditionPollIntervalMs = 100;
-
-PhaseResult result = phase.init(config);
-```
-
-For all options, see [`docs/configuration.md`](docs/configuration.md).
+| PSRAM | Optional; controlled through Strata placement |
+| Dependencies | Strata `v0.1.1` |
+| Exceptions | Not intentionally used by Phase |
+| Status | `0.2.0` |
 
 ## Error handling
 
@@ -183,8 +218,8 @@ Phase reports operation status through `PhaseResult`.
 PhaseResult result = phase.start();
 
 if (!result) {
-	Serial.println(result.message);
-	return;
+    Serial.println(result.message);
+    return;
 }
 ```
 

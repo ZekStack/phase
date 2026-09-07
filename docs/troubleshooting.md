@@ -10,13 +10,43 @@ PhaseResult result = phase.init();
 
 If `pause()` was called before `start()`, boot waits until `resume()`.
 
+## `init()` fails with `TaskCreateFailed`
+
+Check the requested Strata task placement and available memory.
+
+```cpp
+PhaseConfig config;
+config.memory.taskStack = Strata::Placement::PreferExternal;
+```
+
+`PreferExternal` falls back to internal memory when external memory is unavailable. `RequireExternal` does not fall back; task creation fails instead.
+
+If the device does not have usable external RAM, use `Internal` or `PreferExternal`.
+
+## The task did not land where expected
+
+Requested placement and actual region are separate diagnostics:
+
+```cpp
+PhaseDiag diag = phase.getDiagnostics();
+Serial.printf(
+    "requested=%s region=%s\n",
+    Strata::toString(diag.requestedStackPlacement),
+    Strata::toString(diag.stackRegion)
+);
+```
+
+Seeing `Internal` after requesting `PreferExternal` is a valid fallback. Use `RequireExternal` only when failure is preferable to consuming internal RAM.
+
+`allocationPlacement` reports the requested policy for Phase-owned graph storage; it is not a claim that every caller-owned lambda capture is placed there.
+
 ## Registration fails after start
 
 Registration closes after `start()`.
 
 The expected order is:
 
-```txt
+```text
 init
 add steps
 add groups
@@ -39,9 +69,13 @@ Lifecycle callbacks are cooperative. Phase can report that a returned callback e
 
 Use bounded waits inside callbacks and return a failed `PhaseResult` when the module cannot finish.
 
-Phase destruction waits for the internal task to exit. If a callback never returns, destroying the `Phase` object can block forever.
+Phase destruction waits for the internal task to reach its Strata teardown handoff. If a callback never returns, destroying the `Phase` object can block forever.
 
-`end()` is also terminal. After it succeeds, create a new `Phase` object instead of calling `init()` again.
+`end()` must be called from another task context. It returns `Busy` from a Phase callback because the Strata-owned static task stack cannot safely free itself.
+
+A `Phase` object must not be destroyed from one of its own callbacks.
+
+`end()` is terminal. After it succeeds, create a new `Phase` object instead of calling `init()` again.
 
 ## A group timeout expires while waiting for a condition
 
