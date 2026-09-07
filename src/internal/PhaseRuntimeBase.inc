@@ -30,6 +30,7 @@ void copyText(char *destination, size_t destinationSize, const char *source) {
 bool isValidStackSize(size_t stackBytes) {
 	return stackBytes >= kMinStackSizeBytes && (stackBytes % sizeof(StackType_t)) == 0;
 }
+} // namespace
 
 template <typename T>
 class PhasePlacedVector {
@@ -67,6 +68,7 @@ class PhasePlacedVector {
 	std::optional<Strata::Vector<T>> _storage;
 };
 
+namespace {
 enum class DependencyState : uint8_t {
 	Ready,
 	Waiting,
