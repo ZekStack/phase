@@ -1,6 +1,6 @@
 # Getting Started
 
-Phase runs application lifecycle work from its own Strata-backed FreeRTOS task. Phase `v0.2.0` requires Strata `v0.1.1`.
+Phase runs application lifecycle work from its own Strata-backed FreeRTOS task. Phase `v0.2.0` requires Strata `v0.1.4`.
 
 PlatformIO resolves Strata from Phase's `library.json`. Arduino IDE users should install both repositories:
 

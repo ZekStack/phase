@@ -1,5 +1,7 @@
 # Phase
 
+> Current version: **v0.3.0**, with Strata **v0.1.4**.
+
 Phase is an async application lifecycle orchestration library for ESP32.
 
 Phase helps you boot and shut down larger Arduino ESP32 applications in a predictable order. It owns lifecycle orchestration and dependency policy while [Strata](https://github.com/ZekStack/strata) owns Phase memory placement and low-level FreeRTOS storage.
@@ -20,7 +22,7 @@ Phase helps you boot and shut down larger Arduino ESP32 applications in a predic
 
 ## Dependency
 
-Phase `v0.2.0` requires Strata `v0.1.1`.
+Phase `v0.3.0` requires Strata `v0.1.4`.
 
 ### PlatformIO
 
@@ -31,7 +33,7 @@ board = esp32dev
 framework = arduino
 
 lib_deps =
-  https://github.com/ZekStack/phase.git#v0.2.0
+  https://github.com/ZekStack/phase.git#v0.3.0
 
 build_flags =
   -std=gnu++20
@@ -39,7 +41,7 @@ build_unflags =
   -std=gnu++11
 ```
 
-Phase's `library.json` pins Strata `v0.1.1`, so PlatformIO resolves it transitively.
+Phase's `library.json` pins Strata `v0.1.4`, so PlatformIO resolves it transitively.
 
 ### Arduino IDE
 
@@ -50,7 +52,7 @@ Arduino/libraries/Strata
 Arduino/libraries/Phase
 ```
 
-Use Strata `v0.1.1` or a compatible later release.
+Use Strata `v0.1.4` or a compatible later release.
 
 ## Quick start
 
@@ -206,7 +208,7 @@ phase.start();
 | Language | C++20 |
 | Filesystem | none |
 | PSRAM | Optional; controlled through Strata placement |
-| Dependencies | Strata `v0.1.1` |
+| Dependencies | Strata `v0.1.4` |
 | Exceptions | Not intentionally used by Phase |
 | Status | `0.2.0` |
 
